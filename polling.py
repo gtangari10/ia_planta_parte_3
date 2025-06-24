@@ -31,6 +31,12 @@ from telegram.ext import (
     PollHandler,
     filters,
 )
+from dotenv import load_dotenv
+import os
+load_dotenv()
+
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+TELEGRAM_KEY = os.getenv("TELEGRAM_KEY")
 
 # Enable logging
 logging.basicConfig(
@@ -44,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 TOTAL_VOTER_COUNT = 3
 
-genai.configure(api_key="GENIE-KEY")
+genai.configure(api_key=GEMINI_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")   # fast & cheap; use "gemini-1.5-pro" if you need bigger context
 
 
@@ -176,7 +182,7 @@ async def chat_with_gemini(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main() -> None:
     """Run bot."""
     # Create the Application and pass it your bot's token.
-    application = Application.builder().token("TELEGRAM-KEY").build()
+    application = Application.builder().token(TELEGRAM_KEY).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("poll", poll))
     application.add_handler(CommandHandler("quiz", quiz))
