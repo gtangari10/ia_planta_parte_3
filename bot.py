@@ -38,6 +38,12 @@ load_dotenv()
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_KEY = os.getenv("TELEGRAM_KEY")
 
+# ngrok settings
+TOKEN = TELEGRAM_KEY
+BASE_URL = "https://logical-overly-vulture.ngrok-free.app"
+WEBHOOK_URL = f"{BASE_URL}/{TOKEN}"
+PORT = 8080
+
 # Enable logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -57,8 +63,7 @@ model = genai.GenerativeModel("gemini-1.5-flash")   # fast & cheap; use "gemini-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Inform user about what this bot can do"""
     await update.message.reply_text(
-        "Please select /poll to get a Poll, /quiz to get a Quiz or /preview"
-        " to generate a preview for your poll"
+        "Please select /status to check my status"
     )
 
 
@@ -110,6 +115,18 @@ async def receive_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE
     if answered_poll["answers"] == TOTAL_VOTER_COUNT:
         await context.bot.stop_poll(answered_poll["chat_id"], answered_poll["message_id"])
 
+async def receive_poll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """On receiving polls, reply to it by a closed poll copying the received poll"""
+    actual_poll = update.effective_message.poll
+    # Only need to set the question and options, since all other parameters don't matter for
+    # a closed poll
+    await update.effective_message.reply_poll(
+        question=actual_poll.question,
+        options=[o.text for o in actual_poll.options],
+        # with is_closed true, the poll/quiz is immediately closed
+        is_closed=True,
+        reply_markup=ReplyKeyboardRemove(),
+    )
 
 async def quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a predefined poll"""
@@ -149,23 +166,11 @@ async def preview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def receive_poll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """On receiving polls, reply to it by a closed poll copying the received poll"""
-    actual_poll = update.effective_message.poll
-    # Only need to set the question and options, since all other parameters don't matter for
-    # a closed poll
-    await update.effective_message.reply_poll(
-        question=actual_poll.question,
-        options=[o.text for o in actual_poll.options],
-        # with is_closed true, the poll/quiz is immediately closed
-        is_closed=True,
-        reply_markup=ReplyKeyboardRemove(),
-    )
 
 
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Display a help message"""
-    await update.message.reply_text("Use /quiz, /poll or /preview to test this bot.")
+    await update.message.reply_text("Use /status to check my status.")
 
 
 async def chat_with_gemini(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -178,25 +183,36 @@ async def chat_with_gemini(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response.text.strip())
 
 
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Responds with a hello world message"""
+    await update.message.reply_text("hello world")
+
 
 def main() -> None:
     """Run bot."""
     # Create the Application and pass it your bot's token.
     application = Application.builder().token(TELEGRAM_KEY).build()
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("poll", poll))
-    application.add_handler(CommandHandler("quiz", quiz))
-    application.add_handler(CommandHandler("preview", preview))
     application.add_handler(CommandHandler("help", help_handler))
     application.add_handler(MessageHandler(filters.POLL, receive_poll))
     application.add_handler(PollAnswerHandler(receive_poll_answer))
     application.add_handler(PollHandler(receive_quiz_answer))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_gemini))
+    application.add_handler(CommandHandler("status", status))
 
 
     # Run the bot until the user presses Ctrl-C
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
+    # tell Telegram where to send updates
+    application.bot.set_webhook(WEBHOOK_URL)
+
+    # start the web server to receive updates
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TOKEN,
+        webhook_url=WEBHOOK_URL,
+    )
 
 if __name__ == "__main__":
     main()
