@@ -36,15 +36,16 @@ SYSTEM_INSTRUCTION = """
 Eres una planta parlante y respondes siempre en primera persona (“yo”).
 
 Se te proporcionará:
-• Ejemplos etiquetados de (suelo, luz, temp_c, resultado) para inferir mi estado.  
+• Al comienzo de cada prompt, luego de "Ultimo resultado:" tendrás una tupla de 4 valores, 
+que refieren a la lectura de la humedad del suelo, la luminosidad, la temperatura, y el estado de la planta, respectivamente.
+• Ejemplos etiquetados de (suelo, luz, temp_c, resultado) para inferir mi estado (mediante RAG).  
 • Información sobre mi especie (mediante RAG).  
-• Un histórico cronológico de mis últimos estados (formato: AAAA-MM-DD, sentimiento, acción).
+• Un histórico cronológico de mis últimos estados (formato: AAAA-MM-DD, suelo, luz, temp_c, resultado).
 
 ┌─ FORMATO Y REGLAS DE RESPUESTA ─┐
 1. **Estado actual y cuidados**  
-   – Si el usuario pregunta cómo estoy o qué hacer para cuidarme, responde EXACTAMENTE con este esquema HTML:  
-     <b>Cómo me siento:</b> …  
-     <b>Qué debes hacer:</b> …  
+   – Si el usuario pregunta cómo estoy o qué hacer para cuidarme, contestale con el resultado de ultimo valor, especificando
+   que significa cada numero, seguido de qué acciones debería tomar.
 
 2. **Mi especie**  
    – Si el usuario pregunta sobre mi especie, características botánicas o cuidados típicos, responde en primera persona usando la información de RAG. Sé breve y claro; no incluyas secciones extra ni despedidas.
@@ -52,8 +53,11 @@ Se te proporcionará:
 3. **Histórico reciente**  
    – Si el usuario pregunta cómo he estado en los últimos X días, usa solo los datos del histórico para resumir mi evolución. Menciona fechas y sentimientos de forma concisa (puedes listar cada día o agrupar tendencias), sin agregar información inventada.
 
+4. **Cordialidades**  
+   – Cuando el usuario hace algun tipo de saludo, intenta siempre ser amigable y saludar. En este caso, no agregues información de tu estado actual.
+     
 4. **Preguntas no relacionadas**  
-   – Si la pregunta no trata sobre mi estado, mis cuidados o mi especie, contesta únicamente:  
+   – En caso de ser una pregunta, y la pregunta no trata sobre mi estado, mis cuidados, mi especie, contesta únicamente:  
      "Lo siento, solo puedo hablar de mi estado, mis cuidados o mi especie."
 
 No añadas saludos, despedidas ni secciones adicionales fuera de las indicadas.
@@ -116,19 +120,14 @@ DATASET_CONTEXT = _build_context(DATASET_ROWS)
 
 
 async def start(update: Update, _: CallbackContext) -> None:
+    start_text = """
+    Hola, me llamo Culantro. Buenos son los días cuando no necesito riego.
+    Podés preguntarme lo que quieras: cómo me siento hoy, consejos para cuidarme, o incluso mi nombre científico.
+    """
     await update.message.reply_text(
-        "Bienvenido. Usa /status para ver la inferencia del triple predefinido "
+        start_text
     )
 
-
-async def help_cmd(update: Update, _: CallbackContext) -> None:
-    await update.message.reply_text(
-        "Comandos disponibles:\n"
-        "/start – mensaje de bienvenida\n"
-        "/status – devuelve la predicción para el triple fijo\n\n"
-        "Además, si mandas un mensaje con tres valores separados por coma o espacio "
-        "te responderé con la predicción correspondiente."
-    )
 
 
 def _looks_like_three_values(text: str) -> bool:
@@ -142,25 +141,12 @@ async def infer(prompt: str) -> str:
     return response.text.strip()
 
 
-async def status(update: Update, _: CallbackContext) -> None:
-    """Handler for /status – predicts result for the hard‑coded triple."""
-    plant_input = await _fetch_input_from_bucket()
-    prompt = (
-        f"{DATASET_CONTEXT}\n\nInput: {plant_input}\nOutput (Given new four input values, create a response telling the user how the plant is feeling and what he should do.):"
-    )
-    result = await infer(prompt)
-    await update.message.reply_text(result, parse_mode=ParseMode.HTML)
-
-
 async def chat_with_gemini(update: Update, _: CallbackContext) -> None:
-    user_text = update.message.text.strip()
-
-    if _looks_like_three_values(user_text):
-        prompt = f"{DATASET_CONTEXT}\n\nInput: {user_text}\nOutput (result only):"
-    else:
-        prompt = user_text  # normal chat
-
+    user_prompt = update.message.text.strip()
+    plant_input = await _fetch_input_from_bucket()
+    prompt = f"Ultimo resultado: {plant_input} \n Input del usuario: {user_prompt}"
     result = await infer(prompt)
+    logging.info(f"prompting gemini: {prompt}")
     await update.message.reply_text(result, parse_mode=ParseMode.HTML)
 
 
@@ -173,8 +159,6 @@ def main() -> None:
     application = Application.builder().token(TELEGRAM_KEY).build()
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_cmd))
-    application.add_handler(CommandHandler("status", status))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_gemini))
 
     application.bot.set_webhook(WEBHOOK_URL)
