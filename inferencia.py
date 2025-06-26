@@ -1,19 +1,15 @@
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.llms.openai import OpenAI
-from llama_index.core import Settings, Document, VectorStoreIndex
+
+from llama_index.core import (
+    Settings,
+    StorageContext,
+    load_index_from_storage,
+)
 from llama_index.core.node_parser import SentenceSplitter
-import pandas as pd
-import os
-from llama_index.core import StorageContext, load_index_from_storage
-import os
-from llama_index.llms.gemini import Gemini
 from llama_index.core.prompts import RichPromptTemplate
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.llms.gemini import Gemini
 
-GOOGLE_API_KEY = "AIzaSyAEidoixx8HfJ8By_b0YiiEMJiTP2Sm2vM"  # add your GOOGLE API key here
-
-# 1) Configurar modelo de embeddings, LLM y splitter
 Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-base-en-v1.5")
-os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 Settings.llm = llm = Gemini(
     model="models/gemini-1.5-flash",temperature=0.0
     # api_key="some key",  # uses GOOGLE_API_KEY env var by default

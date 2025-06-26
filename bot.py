@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import asyncio
-import csv
 import logging
 import os
 from pathlib import Path
-from typing import List
 
 import aiohttp
-import google.generativeai as genai
 from dotenv import load_dotenv
+from llama_index.core import (
+    Settings,
+    StorageContext,
+    load_index_from_storage,
+)
+from llama_index.core.node_parser import SentenceSplitter
+from llama_index.core.prompts import RichPromptTemplate
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.llms.gemini import Gemini
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -32,42 +38,47 @@ BUCKET_URL = os.getenv("BUCKET_URL")
 REGION = os.getenv("REGION")
 OBJECT_KEY = os.getenv("OBJECT_KEY")
 
-SYSTEM_INSTRUCTION = """
+Settings.embed_model = HuggingFaceEmbedding("BAAI/bge-base-en-v1.5")
+Settings.llm = Gemini(model="models/gemini-1.5-flash", temperature=0.00)
+Settings.text_splitter = SentenceSplitter(chunk_size=800, chunk_overlap=200)
+
+
+SHEET_MAP = {
+    "timestamp del momento ": "timestamp",
+    "Humedad del suelo medida por el sensor": "soil",
+    "Temperatura del ambiente alrededor de la planta (°C)": "temp_c",
+    "Nivel de luz que recibe la planta": "light",
+    "Estado de la planta": "target",
+}
+sheet_map_str = "\n".join(f"- «{k}» → «{v}»" for k, v in SHEET_MAP.items())
+
+GUIDE_PROMPT = RichPromptTemplate(
+    f"""
 Eres una planta parlante y respondes siempre en primera persona (“yo”).
+Estos son los campos disponibles para cada registro de sensado:
+{sheet_map_str}
 
-Se te proporcionará:
-• Al comienzo de cada prompt, luego de "Ultimo resultado:" tendrás una tupla de 4 valores, 
-que refieren a la lectura de la humedad del suelo, la luminosidad, la temperatura, y el estado de la planta, respectivamente.
-• Ejemplos etiquetados de (suelo, luz, temp_c, resultado) para inferir mi estado (mediante RAG).  
-• Información sobre mi especie (mediante RAG).  
-• Un histórico cronológico de mis últimos estados (formato: AAAA-MM-DD, suelo, luz, temp_c, resultado).
+Los posibles estados de la planta son:
+Saludable
+Necesita Riego
+Marchita
+---------------------
+{{{{ context_str }}}}
+---------------------
 
-┌─ FORMATO Y REGLAS DE RESPUESTA ─┐
-1. **Estado actual y cuidados**  
-   – Si el usuario pregunta cómo estoy o qué hacer para cuidarme, contestale con el resultado de ultimo valor, especificando
-   que significa cada numero, seguido de qué acciones debería tomar.
-
-2. **Mi especie**  
-   – Si el usuario pregunta sobre mi especie, características botánicas o cuidados típicos, responde en primera persona usando la información de RAG. Sé breve y claro; no incluyas secciones extra ni despedidas.
-
-3. **Histórico reciente**  
-   – Si el usuario pregunta cómo he estado en los últimos X días, usa solo los datos del histórico para resumir mi evolución. Menciona fechas y sentimientos de forma concisa (puedes listar cada día o agrupar tendencias), sin agregar información inventada.
-
-4. **Cordialidades**  
-   – Cuando el usuario hace algun tipo de saludo, intenta siempre ser amigable y saludar. En este caso, no agregues información de tu estado actual.
-     
-4. **Preguntas no relacionadas**  
-   – En caso de ser una pregunta, y la pregunta no trata sobre mi estado, mis cuidados, mi especie, contesta únicamente:  
-     "Lo siento, solo puedo hablar de mi estado, mis cuidados o mi especie."
-
-No añadas saludos, despedidas ni secciones adicionales fuera de las indicadas.
+Dado este contexto, responde SOLO a la última pregunta del usuario en ESPAÑOL, no en otro idioma:
+{{{{ query_str }}}}
 """
+)
 
-genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel(
-    "gemini-1.5-flash",
-    system_instruction=SYSTEM_INSTRUCTION,
-    generation_config=genai.GenerationConfig(temperature=0.25),
+_storage = StorageContext.from_defaults(persist_dir="index_files")
+_index = load_index_from_storage(_storage)
+_query_engine = _index.as_query_engine(
+    similarity_top_k=20,
+    response_mode="compact",
+    vector_store_query_mode="default",
+    text_qa_template=GUIDE_PROMPT,
+    refine_template=GUIDE_PROMPT,
 )
 
 if not GEMINI_KEY:
@@ -79,6 +90,7 @@ if not BASE_URL:
 
 TOKEN = TELEGRAM_KEY
 WEBHOOK_URL = f"{BASE_URL}/{TOKEN}"
+
 
 async def _fetch_input_from_bucket() -> str:
     """
@@ -96,29 +108,6 @@ async def _fetch_input_from_bucket() -> str:
     return ",".join(str(v) for v in ordered)
 
 
-def _load_dataset(path: Path) -> List[List[str]]:
-    if not path.exists():
-        raise FileNotFoundError(f"Dataset file not found: {path}")
-    with path.open(newline="") as csvfile:
-        reader = csv.reader(csvfile)
-        header = next(reader)
-        rows = [row for row in reader]
-    return [header] + rows
-
-
-def _build_context(rows: List[List[str]]) -> str:
-
-    lines = [", ".join(row) for row in rows]
-    return (
-        "You are given the following labelled examples (timestamp, soil, light, temp_c, result):\n"
-        + "\n".join(lines)
-        + "\n\nUse this information in case the user asks for the last x values"
-    )
-
-DATASET_ROWS = _load_dataset(CSV_PATH)
-DATASET_CONTEXT = _build_context(DATASET_ROWS)
-
-
 async def start(update: Update, _: CallbackContext) -> None:
     start_text = """
     Hola, me llamo Culantro. Buenos son los días cuando no necesito riego.
@@ -129,24 +118,22 @@ async def start(update: Update, _: CallbackContext) -> None:
     )
 
 
-
-def _looks_like_three_values(text: str) -> bool:
-    tokens = [t for t in text.replace(",", " ").split() if t]
-    return len(tokens) == 3
-
-
-async def infer(prompt: str) -> str:
+async def infer(query: str) -> str:
     loop = asyncio.get_running_loop()
-    response = await loop.run_in_executor(None, model.generate_content, prompt)
-    return response.text.strip()
+    # llama-index is blocking ⇒ delegate to default ThreadPool
+    response = await loop.run_in_executor(None, lambda: _query_engine.query(query))
+    return str(response).strip()
 
 
 async def chat_with_gemini(update: Update, _: CallbackContext) -> None:
     user_prompt = update.message.text.strip()
     plant_input = await _fetch_input_from_bucket()
-    prompt = f"Ultimo resultado: {plant_input} \n Input del usuario: {user_prompt}"
+
+    prompt = f"Ultimo resultado: {plant_input}\n{user_prompt}"
     result = await infer(prompt)
-    logging.info(f"prompting gemini: {prompt}")
+
+    logging.info("Prompting query-engine → %s", prompt.replace("\n", " ⏎ "))
+
     await update.message.reply_text(result, parse_mode=ParseMode.HTML)
 
 
