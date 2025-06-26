@@ -146,6 +146,7 @@ async def infer(query: str) -> str:
     return str(response).strip()
 
 retriever = _index.as_retriever(similarity_top_k=8)
+
 async def chat_with_gemini(update: Update, _: CallbackContext) -> None:
     question = update.message.text.strip()
     last_read = await _fetch_input_from_bucket()
