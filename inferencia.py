@@ -9,7 +9,7 @@ import os
 from llama_index.llms.gemini import Gemini
 from llama_index.core.prompts import RichPromptTemplate
 
-GOOGLE_API_KEY = "AIzaSyAEidoixx8HfJ8By_b0YiiEMJiTP2Sm2vM"  # add your GOOGLE API key here
+GOOGLE_API_KEY = "AIzaSyALQE2ubCm9MDP1Lu7PsGEuLiTnNp-j-O4"  # add your GOOGLE API key here
 
 # 1) Configurar modelo de embeddings, LLM y splitter
 Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-base-en-v1.5")
@@ -47,7 +47,7 @@ Los posibles estados de la planta son:
 {{{{ context_str }}}}
 ---------------------
 
-Dado este contexto, responde SOLO a la última pregunta del usuario:
+Dado este contexto, responde SOLO a la última pregunta del usuario en ESPAÑOL, no en otro idioma:
 {{{{ query_str }}}}
 """
 )
@@ -61,12 +61,12 @@ index = load_index_from_storage(storage_context)
 # 2) Crear motor de consulta
 query_engine = index.as_query_engine(
             similarity_top_k=20,
-            response_mode="tree_summarize",
-            vector_store_query_mode="mmr",
+            response_mode="compact",
+            vector_store_query_mode="default",
             text_qa_template=GUIDE_RICH_PROMPT,
             refine_template=GUIDE_RICH_PROMPT,
     )
 
 # 3) Hacer una pregunta
-response = query_engine.query("cuales son los últimos 10 estados?")
+response = query_engine.query("Cuales son los primeros 10 estados de la planta? Guiate por tiemstamp")
 print(response)
