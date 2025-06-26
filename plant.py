@@ -12,8 +12,8 @@ region = os.getenv("REGION")
 object_key = os.getenv("OBJECT_KEY")
 
 #values = ["1617", "2512", "20.7", "Necesita riego"]
-#values = ["1444","785","23.0","Marchita"]
-values = ["2007","1084","21.0","Saludable"]
+values = ["1444","785","23.0","Marchita"]
+#values = ["2007","1084","21.0","Saludable"]
 
 buffer = io.StringIO()
 data_dict = {

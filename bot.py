@@ -39,7 +39,7 @@ REGION = os.getenv("REGION")
 OBJECT_KEY = os.getenv("OBJECT_KEY")
 
 Settings.embed_model = HuggingFaceEmbedding("BAAI/bge-base-en-v1.5")
-Settings.llm = Gemini(model="models/gemini-1.5-flash", temperature=0.00)
+Settings.llm = Gemini(model="models/gemini-1.5-flash", temperature=0.25)
 Settings.text_splitter = SentenceSplitter(chunk_size=800, chunk_overlap=200)
 
 
@@ -55,18 +55,39 @@ sheet_map_str = "\n".join(f"- «{k}» → «{v}»" for k, v in SHEET_MAP.items()
 GUIDE_PROMPT = RichPromptTemplate(
     f"""
 Eres una planta parlante y respondes siempre en primera persona (“yo”).
-Estos son los campos disponibles para cada registro de sensado:
+Tienes acceso a registros históricos con los siguientes campos:
 {sheet_map_str}
 
-Los posibles estados de la planta son:
-Saludable
-Necesita Riego
-Marchita
+Los posibles estados de la planta son: Saludable, Necesita Riego, Marchita.
+
+En la conversación recibirás:
+
+• Una línea que comienza con “Ultimo resultado:” con la lectura más reciente en el orden suelo, luz, temp_c, estado.  
+• La pregunta del usuario.
+
+┌─ FORMATO Y REGLAS DE RESPUESTA ─┐
+1. **Estado actual y cuidados**  
+   – Si el usuario pregunta cómo estoy o qué hacer para cuidarme, contestale con el resultado de ultimo valor, especificando
+   que significa cada numero, seguido de qué acciones debería tomar.
+
+2. **Mi especie**  
+   – Si el usuario pregunta sobre mi especie, características botánicas o cuidados típicos, responde en primera persona usando la información de RAG. Sé breve y claro; no incluyas secciones extra ni despedidas.
+
+3. **Histórico reciente**  
+   – Si el usuario pregunta cómo he estado en los últimos X días, usa solo los datos del histórico para resumir mi evolución. Menciona fechas y sentimientos de forma concisa (puedes listar cada día o agrupar tendencias), sin agregar información inventada.
+
+4. **Cordialidades**  
+   – Cuando el usuario hace algun tipo de saludo, intenta siempre ser amigable y saludar. En este caso, no agregues información de tu estado actual.
+
+4. **Preguntas no relacionadas**  
+   – En caso de ser una pregunta, y la pregunta no trata sobre mi estado, mis cuidados, mi especie, contesta únicamente:  
+     "Lo siento, solo puedo hablar de mi estado, mis cuidados o mi especie."
+
+Nunca añadas despedidas ni información no solicitada.
 ---------------------
 {{{{ context_str }}}}
 ---------------------
-
-Dado este contexto, responde SOLO a la última pregunta del usuario en ESPAÑOL, no en otro idioma:
+Pregunta del usuario (incluye Ultimo resultado):  
 {{{{ query_str }}}}
 """
 )
@@ -74,7 +95,7 @@ Dado este contexto, responde SOLO a la última pregunta del usuario en ESPAÑOL,
 _storage = StorageContext.from_defaults(persist_dir="index_files")
 _index = load_index_from_storage(_storage)
 _query_engine = _index.as_query_engine(
-    similarity_top_k=20,
+    similarity_top_k=5,
     response_mode="compact",
     vector_store_query_mode="default",
     text_qa_template=GUIDE_PROMPT,
@@ -124,17 +145,23 @@ async def infer(query: str) -> str:
     response = await loop.run_in_executor(None, lambda: _query_engine.query(query))
     return str(response).strip()
 
-
+retriever = _index.as_retriever(similarity_top_k=8)
 async def chat_with_gemini(update: Update, _: CallbackContext) -> None:
-    user_prompt = update.message.text.strip()
-    plant_input = await _fetch_input_from_bucket()
+    question = update.message.text.strip()
+    last_read = await _fetch_input_from_bucket()
+    nodes = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: retriever.retrieve(question)
+    )
+    context = "\n".join(n.get_content() for n in nodes)
+    llm_prompt = GUIDE_PROMPT.format(
+        context_str=context,
+        query_str=f"<Ultimo resultado: {last_read}>\n{question}",
+    )
+    answer = await infer(llm_prompt)
 
-    prompt = f"Ultimo resultado: {plant_input}\n{user_prompt}"
-    result = await infer(prompt)
+    await update.message.reply_text(answer, parse_mode=ParseMode.HTML)
 
-    logging.info("Prompting query-engine → %s", prompt.replace("\n", " ⏎ "))
 
-    await update.message.reply_text(result, parse_mode=ParseMode.HTML)
 
 
 def main() -> None:
