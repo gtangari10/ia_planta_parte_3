@@ -3,12 +3,9 @@ from llama_index.llms.openai import OpenAI
 from llama_index.core import Settings, Document, VectorStoreIndex
 from llama_index.core.node_parser import SentenceSplitter
 import pandas as pd
-import os
 from llama_index.core import StorageContext, load_index_from_storage
 import os
 from llama_index.llms.gemini import Gemini
-
-
 
 
 # 1) Configurar modelo de embeddings, LLM y splitter

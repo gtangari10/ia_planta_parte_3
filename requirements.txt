@@ -1,13 +1,6 @@
 llama-index
 llama-index-embeddings-huggingface
 llama-index-llms-gemini
-llama-index-llms-huggingface
-sentence-transformers
-faiss-cpu
 pandas==2.2.2
-openpyxl
-tiktoken
-huggingface-hub[hf_xet]
 transformers>=4.41.0,<4.50.0
-sentencepiece
-accelerate
+sentencepiece      
