@@ -129,7 +129,9 @@ async def _fetch_input_from_bucket() -> str:
     return ",".join(str(v) for v in ordered)
 
 
-async def start(update: Update, _: CallbackContext) -> None:
+async def start(update: Update, context: CallbackContext) -> None:
+    chat_id = update.effective_chat.id
+    print(f"Chat ID: {chat_id}")  # o loguealo
     start_text = """
     Hola, me llamo Culantro. Buenos son los días cuando no necesito riego.
     Podés preguntarme lo que quieras: cómo me siento hoy, consejos para cuidarme, o incluso mi nombre científico.
@@ -137,6 +139,7 @@ async def start(update: Update, _: CallbackContext) -> None:
     await update.message.reply_text(
         start_text
     )
+    await context.bot.send_message(chat_id=chat_id, text="Este es un mensaje del servidor.")
 
 
 async def infer(query: str) -> str:
