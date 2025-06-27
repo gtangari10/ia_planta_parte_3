@@ -29,6 +29,8 @@ from telegram.ext import (
 load_dotenv()
 
 GEMINI_KEY: str | None = os.getenv("GEMINI_API_KEY")
+
+print(GEMINI_KEY)
 TELEGRAM_KEY: str | None = os.getenv("TELEGRAM_KEY")
 BASE_URL: str | None = os.getenv("BASE_URL")
 PORT: int = int(os.getenv("PORT", "8080"))
