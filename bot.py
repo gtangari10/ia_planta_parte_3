@@ -6,7 +6,12 @@ import os
 from pathlib import Path
 
 import aiohttp
+import google.generativeai as genai
 from dotenv import load_dotenv
+
+# from langchain.chat_models import init_chat_model
+# from langgraph.prebuilt import create_react_agent
+# from langgraph_supervisor import create_supervisor
 from llama_index.core import (
     Settings,
     StorageContext,
@@ -17,7 +22,6 @@ from llama_index.core.prompts import RichPromptTemplate
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.gemini import Gemini
 from telegram import Update
-from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CallbackContext,
@@ -44,6 +48,63 @@ Settings.embed_model = HuggingFaceEmbedding("BAAI/bge-base-en-v1.5")
 Settings.llm = Gemini(model="models/gemini-1.5-flash", temperature=0.25)
 Settings.text_splitter = SentenceSplitter(chunk_size=800, chunk_overlap=200)
 
+model = genai.GenerativeModel("gemini-1.5-flash")
+
+# research_agent = create_react_agent(
+#     model="openai:gpt-4.1",
+#     tools=[web_search],
+#     prompt=(
+#         "You are a research agent.\n\n"
+#         "INSTRUCTIONS:\n"
+#         "- Assist ONLY with research-related tasks, DO NOT do any math\n"
+#         "- After you're done with your tasks, respond to the supervisor directly\n"
+#         "- Respond ONLY with the results of your work, do NOT include ANY other text."
+#     ),
+#     name="research_agent",
+# )
+
+# def add(a: float, b: float):
+#     """Add two numbers."""
+#     return a + b
+
+
+# def multiply(a: float, b: float):
+#     """Multiply two numbers."""
+#     return a * b
+
+
+# def divide(a: float, b: float):
+#     """Divide two numbers."""
+#     return a / b
+
+
+# math_agent = create_react_agent(
+#     model="openai:gpt-4.1",
+#     tools=[add, multiply, divide],
+#     prompt=(
+#         "You are a math agent.\n\n"
+#         "INSTRUCTIONS:\n"
+#         "- Assist ONLY with math-related tasks\n"
+#         "- After you're done with your tasks, respond to the supervisor directly\n"
+#         "- Respond ONLY with the results of your work, do NOT include ANY other text."
+#     ),
+#     name="math_agent",
+# )
+
+# supervisor = create_supervisor(
+#     model=init_chat_model("openai:gpt-4.1"),
+#     agents=[research_agent, math_agent],
+#     prompt=(
+#         "You are a supervisor managing two agents:\n"
+#         "- a research agent. Assign research-related tasks to this agent\n"
+#         "- a math agent. Assign math-related tasks to this agent\n"
+#         "Assign work to one agent at a time, do not call agents in parallel.\n"
+#         "Do not do any work yourself."
+#     ),
+#     add_handoff_back_messages=True,
+#     output_mode="full_history",
+# ).compile()
+
 
 SHEET_MAP = {
     "timestamp del momento ": "timestamp",
@@ -57,6 +118,7 @@ sheet_map_str = "\n".join(f"- «{k}» → «{v}»" for k, v in SHEET_MAP.items()
 GUIDE_PROMPT = RichPromptTemplate(
     f"""
 Eres una planta parlante y respondes siempre en primera persona (“yo”).
+Tu nombre es Culantro y sos uruguayo.
 Tienes acceso a registros históricos con los siguientes campos:
 {sheet_map_str}
 
@@ -80,10 +142,6 @@ En la conversación recibirás:
 
 4. **Cordialidades**  
    – Cuando el usuario hace algun tipo de saludo, intenta siempre ser amigable y saludar. En este caso, no agregues información de tu estado actual.
-
-4. **Preguntas no relacionadas**  
-   – En caso de ser una pregunta, y la pregunta no trata sobre mi estado, mis cuidados, mi especie, contesta únicamente:  
-     "Lo siento, solo puedo hablar de mi estado, mis cuidados o mi especie."
 
 Nunca añadas despedidas ni información no solicitada.
 ---------------------
@@ -138,10 +196,10 @@ async def start(update: Update, context: CallbackContext) -> None:
     Hola, me llamo Culantro. Buenos son los días cuando no necesito riego.
     Podés preguntarme lo que quieras: cómo me siento hoy, consejos para cuidarme, o incluso mi nombre científico.
     """
-    await update.message.reply_text(
-        start_text
+    await update.message.reply_text(start_text)
+    await context.bot.send_message(
+        chat_id=chat_id, text="Este es un mensaje del servidor."
     )
-    await context.bot.send_message(chat_id=chat_id, text="Este es un mensaje del servidor.")
 
 
 async def infer(query: str) -> str:
@@ -150,7 +208,9 @@ async def infer(query: str) -> str:
     response = await loop.run_in_executor(None, lambda: _query_engine.query(query))
     return str(response).strip()
 
+
 retriever = _index.as_retriever(similarity_top_k=8)
+
 
 async def chat_with_gemini(update: Update, _: CallbackContext) -> None:
     question = update.message.text.strip()
@@ -163,11 +223,11 @@ async def chat_with_gemini(update: Update, _: CallbackContext) -> None:
         context_str=context,
         query_str=f"<Ultimo resultado: {last_read}>\n{question}",
     )
-    answer = await infer(llm_prompt)
+    loop = asyncio.get_running_loop()
+    response = await loop.run_in_executor(None, model.generate_content, llm_prompt)
+    # answer = await infer(llm_prompt)
 
-    await update.message.reply_text(answer, parse_mode=ParseMode.HTML)
-
-
+    await update.message.reply_text(response.text.strip())
 
 
 def main() -> None:
@@ -179,7 +239,9 @@ def main() -> None:
     application = Application.builder().token(TELEGRAM_KEY).build()
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_gemini))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_gemini)
+    )
 
     application.bot.set_webhook(WEBHOOK_URL)
 
