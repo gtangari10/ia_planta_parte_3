@@ -97,14 +97,9 @@ Pregunta del usuario (incluye Ultimo resultado):
 )
 
 _storage = StorageContext.from_defaults(persist_dir="index_files")
-_index = load_index_from_storage(_storage)
-_query_engine = _index.as_query_engine(
-    similarity_top_k=5,
-    response_mode="compact",
-    vector_store_query_mode="default",
-    text_qa_template=GUIDE_PROMPT,
-    refine_template=GUIDE_PROMPT,
-)
+# Cargar índices previamente persistidos
+index_csv = load_index_from_storage(StorageContext.from_defaults(persist_dir="index_csv"))
+index_culantrillo = load_index_from_storage(StorageContext.from_defaults(persist_dir="index_culantrillo"))
 
 if not GEMINI_KEY:
     raise RuntimeError("Missing GEMINI_API_KEY env var")
@@ -122,33 +117,36 @@ client = genai.Client(api_key=GEMINI_KEY)
 class PlantState(TypedDict):
     input: str
     output: str
-    next: Literal["estado_actual", "historical_data"]
+    next: Literal["estado_actual_e_historico", "informacion_especie_planta"]
 
 
 next_schema = types.Schema(
     type=types.Type.OBJECT,
     properties={
         "next": types.Schema(
-            type=types.Type.STRING, enum=["estado_actual", "historical_data"]
+            type=types.Type.STRING, enum=["estado_actual_e_historico", "informacion_especie_planta"]
         )
     },
     required=["next"],
 )
 
-
-def ejecutar_agente_historico(input):
-    return f"{input}, se ejecutaron datos historicos"
-
-
-def ejecutar_estado_actual(input):
-    return f"{input}, se ejecuto estado actual"
-
+retriever_csv = index_csv.as_retriever(similarity_top_k=3)
+retriever_culantrillo = index_culantrillo.as_retriever(similarity_top_k=3)
+# query_engine_culantrillo = index_culantrillo.as_query_engine(
+#     similarity_top_k=5,
+#     response_mode="tree_summarize",
+#     vector_store_query_mode="mmr",
+#     text_qa_template=GUIDE_PROMPT,
+#     refine_template=GUIDE_PROMPT,
+# )
 
 def supervisor(state: PlantState) -> PlantState:
     prompt = (
         f"Decide cuál agente debe atender esta pregunta (solo JSON):\n"
         f'Pregunta: "{state["input"]}"\n'
-        'Formato: {"next": "estado_actual"} o {"next": "historical_data"}'
+        'Si la pregunta está relacionada con el estado de la planta o su histórico invocar estado_actual'
+        'Si la pregunta es "¿cual es tu especie?" o relacionada con información acerca de la planta invocar historical_data'
+        'Formato: {"next": "estado_actual_e_historico"} o {"next": "informacion_especie_planta"}'
     )
     config = types.GenerateContentConfig(
         response_mime_type="application/json", response_schema=next_schema
@@ -161,28 +159,55 @@ def supervisor(state: PlantState) -> PlantState:
     return {"input": state["input"], "output": "", "next": siguiente}
 
 
-def estado_actual_node(state: PlantState) -> PlantState:
-    resultado = ejecutar_estado_actual(state["input"])
-    return {"output": resultado, "input": state["input"]}
+def estado_actual_e_historico_node(state: PlantState) -> PlantState:
+    input = state["input"]
+    print("estado_actual_e_historico")
+
+    last_read = asyncio.run(_fetch_input_from_bucket())
+    nodes = retriever_csv.retrieve(input)
+
+    context = "\n".join(n.get_content() for n in nodes)
+    print(f"el contexto es:{context}")
+    llm_prompt = GUIDE_PROMPT.format(
+        context_str=context,
+        query_str=f"<Ultimo resultado: {last_read}>\n{input}",
+    )
+    response = client.models.generate_content(
+        model="gemini-1.5-flash",
+        contents=llm_prompt,
+    )
+    return {"input": input, "output": response.text.strip()}
 
 
-def historic_data_node(state: PlantState) -> PlantState:
-    resultado = ejecutar_agente_historico(state["input"])
-    return {"output": resultado, "input": state["input"]}
+def informacion_especie_planta_node(state: PlantState) -> PlantState:
+    print("informacion_especie_planta")
+    input = state["input"]
+    nodes = retriever_culantrillo.retrieve(input)
+
+    context = "\n".join(n.get_content() for n in nodes)
+    llm_prompt = GUIDE_PROMPT.format(
+        context_str=context,
+        query_str=input,
+    )
+    response = client.models.generate_content(
+        model="gemini-1.5-flash",
+        contents=llm_prompt,
+    )
+    return {"input": input, "output": response.text.strip()}
 
 
 builder = StateGraph(PlantState)
 builder.add_node("supervisor", supervisor)
-builder.add_node("estado_actual", estado_actual_node)
-builder.add_node("historical_data", historic_data_node)
+builder.add_node("estado_actual_e_historico", estado_actual_e_historico_node)
+builder.add_node("informacion_especie_planta", informacion_especie_planta_node)
 builder.add_conditional_edges(
     "supervisor",
     lambda s: s["next"],
-    {"estado_actual": "estado_actual", "historical_data": "historical_data"},
+    {"estado_actual_e_historico": "estado_actual_e_historico", "informacion_especie_planta": "informacion_especie_planta"},
 )
 builder.set_entry_point("supervisor")
-builder.set_finish_point("estado_actual")
-builder.set_finish_point("historical_data")
+builder.set_finish_point("estado_actual_e_historico")
+builder.set_finish_point("informacion_especie_planta")
 graph = builder.compile()
 
 
@@ -215,14 +240,14 @@ async def start(update: Update, context: CallbackContext) -> None:
     )
 
 
-async def infer(query: str) -> str:
+"""async def infer(query: str) -> str:
     loop = asyncio.get_running_loop()
     # llama-index is blocking ⇒ delegate to default ThreadPool
     response = await loop.run_in_executor(None, lambda: _query_engine.query(query))
-    return str(response).strip()
+    return str(response).strip()"""
 
 
-retriever = _index.as_retriever(similarity_top_k=8)
+"""retriever = _index.as_retriever(similarity_top_k=8)"""
 
 
 # async def chat_with_gemini(update: Update, _: CallbackContext) -> None:
