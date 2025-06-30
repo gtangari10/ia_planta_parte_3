@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from pathlib import Path
+from typing import Literal
 
 import aiohttp
+import google.genai as genai
 import google.generativeai as genai
 from dotenv import load_dotenv
-
-# from langchain.chat_models import init_chat_model
-# from langgraph.prebuilt import create_react_agent
-# from langgraph_supervisor import create_supervisor
+from google import genai
+from google.genai import types
+from langgraph.graph import StateGraph
 from llama_index.core import (
     Settings,
     StorageContext,
@@ -29,12 +31,12 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from typing_extensions import TypedDict
 
 load_dotenv()
 
 GEMINI_KEY: str | None = os.getenv("GEMINI_API_KEY")
 
-print(GEMINI_KEY)
 TELEGRAM_KEY: str | None = os.getenv("TELEGRAM_KEY")
 BASE_URL: str | None = os.getenv("BASE_URL")
 PORT: int = int(os.getenv("PORT", "8080"))
@@ -47,64 +49,6 @@ OBJECT_KEY = os.getenv("OBJECT_KEY")
 Settings.embed_model = HuggingFaceEmbedding("BAAI/bge-base-en-v1.5")
 Settings.llm = Gemini(model="models/gemini-1.5-flash", temperature=0.25)
 Settings.text_splitter = SentenceSplitter(chunk_size=800, chunk_overlap=200)
-
-model = genai.GenerativeModel("gemini-1.5-flash")
-
-# research_agent = create_react_agent(
-#     model="openai:gpt-4.1",
-#     tools=[web_search],
-#     prompt=(
-#         "You are a research agent.\n\n"
-#         "INSTRUCTIONS:\n"
-#         "- Assist ONLY with research-related tasks, DO NOT do any math\n"
-#         "- After you're done with your tasks, respond to the supervisor directly\n"
-#         "- Respond ONLY with the results of your work, do NOT include ANY other text."
-#     ),
-#     name="research_agent",
-# )
-
-# def add(a: float, b: float):
-#     """Add two numbers."""
-#     return a + b
-
-
-# def multiply(a: float, b: float):
-#     """Multiply two numbers."""
-#     return a * b
-
-
-# def divide(a: float, b: float):
-#     """Divide two numbers."""
-#     return a / b
-
-
-# math_agent = create_react_agent(
-#     model="openai:gpt-4.1",
-#     tools=[add, multiply, divide],
-#     prompt=(
-#         "You are a math agent.\n\n"
-#         "INSTRUCTIONS:\n"
-#         "- Assist ONLY with math-related tasks\n"
-#         "- After you're done with your tasks, respond to the supervisor directly\n"
-#         "- Respond ONLY with the results of your work, do NOT include ANY other text."
-#     ),
-#     name="math_agent",
-# )
-
-# supervisor = create_supervisor(
-#     model=init_chat_model("openai:gpt-4.1"),
-#     agents=[research_agent, math_agent],
-#     prompt=(
-#         "You are a supervisor managing two agents:\n"
-#         "- a research agent. Assign research-related tasks to this agent\n"
-#         "- a math agent. Assign math-related tasks to this agent\n"
-#         "Assign work to one agent at a time, do not call agents in parallel.\n"
-#         "Do not do any work yourself."
-#     ),
-#     add_handoff_back_messages=True,
-#     output_mode="full_history",
-# ).compile()
-
 
 SHEET_MAP = {
     "timestamp del momento ": "timestamp",
@@ -172,6 +116,75 @@ if not BASE_URL:
 TOKEN = TELEGRAM_KEY
 WEBHOOK_URL = f"{BASE_URL}/{TOKEN}"
 
+client = genai.Client(api_key=GEMINI_KEY)
+
+
+class PlantState(TypedDict):
+    input: str
+    output: str
+    next: Literal["estado_actual", "historical_data"]
+
+
+next_schema = types.Schema(
+    type=types.Type.OBJECT,
+    properties={
+        "next": types.Schema(
+            type=types.Type.STRING, enum=["estado_actual", "historical_data"]
+        )
+    },
+    required=["next"],
+)
+
+
+def ejecutar_agente_historico(input):
+    return f"{input}, se ejecutaron datos historicos"
+
+
+def ejecutar_estado_actual(input):
+    return f"{input}, se ejecuto estado actual"
+
+
+def supervisor(state: PlantState) -> PlantState:
+    prompt = (
+        f"Decide cuál agente debe atender esta pregunta (solo JSON):\n"
+        f'Pregunta: "{state["input"]}"\n'
+        'Formato: {"next": "estado_actual"} o {"next": "historical_data"}'
+    )
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json", response_schema=next_schema
+    )
+    response = client.models.generate_content(
+        model="gemini-2.5-flash", contents=prompt, config=config
+    )
+    data = response.parsed or json.loads(response.text)
+    siguiente = data["next"]
+    return {"input": state["input"], "output": "", "next": siguiente}
+
+
+def estado_actual_node(state: PlantState) -> PlantState:
+    resultado = ejecutar_estado_actual(state["input"])
+    return {"output": resultado, "input": state["input"]}
+
+
+def historic_data_node(state: PlantState) -> PlantState:
+    resultado = ejecutar_agente_historico(state["input"])
+    return {"output": resultado, "input": state["input"]}
+
+
+builder = StateGraph(PlantState)
+builder.add_node("supervisor", supervisor)
+builder.add_node("estado_actual", estado_actual_node)
+builder.add_node("historical_data", historic_data_node)
+builder.add_conditional_edges(
+    "supervisor",
+    lambda s: s["next"],
+    {"estado_actual": "estado_actual", "historical_data": "historical_data"},
+)
+builder.set_entry_point("supervisor")
+builder.set_finish_point("estado_actual")
+builder.set_finish_point("historical_data")
+graph = builder.compile()
+
 
 async def _fetch_input_from_bucket() -> str:
     """
@@ -212,22 +225,34 @@ async def infer(query: str) -> str:
 retriever = _index.as_retriever(similarity_top_k=8)
 
 
-async def chat_with_gemini(update: Update, _: CallbackContext) -> None:
-    question = update.message.text.strip()
-    last_read = await _fetch_input_from_bucket()
-    nodes = await asyncio.get_running_loop().run_in_executor(
-        None, lambda: retriever.retrieve(question)
-    )
-    context = "\n".join(n.get_content() for n in nodes)
-    llm_prompt = GUIDE_PROMPT.format(
-        context_str=context,
-        query_str=f"<Ultimo resultado: {last_read}>\n{question}",
-    )
-    loop = asyncio.get_running_loop()
-    response = await loop.run_in_executor(None, model.generate_content, llm_prompt)
-    # answer = await infer(llm_prompt)
+# async def chat_with_gemini(update: Update, _: CallbackContext) -> None:
+#     question = update.message.text.strip()
+#     last_read = await _fetch_input_from_bucket()
+#     nodes = await asyncio.get_running_loop().run_in_executor(
+#         None, lambda: retriever.retrieve(question)
+#     )
+#     context = "\n".join(n.get_content() for n in nodes)
+#     llm_prompt = GUIDE_PROMPT.format(
+#         context_str=context,
+#         query_str=f"<Ultimo resultado: {last_read}>\n{question}",
+#     )
+#     loop = asyncio.get_running_loop()
+#     response = await loop.run_in_executor(None, model.generate_content, llm_prompt)
+#     answer = await infer(llm_prompt)
 
-    await update.message.reply_text(response.text.strip())
+#     await update.message.reply_text(response.text.strip())
+
+
+async def chat_with_agent(update: Update, context: CallbackContext) -> None:
+    question = update.message.text.strip()
+
+    # Ejecutar el grafo (supervisor decide a dónde ir)
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, lambda: graph.invoke({"input": question}))
+
+    respuesta_final = result.get("output", "No se pudo generar una respuesta.")
+
+    await update.message.reply_text(respuesta_final)
 
 
 def main() -> None:
@@ -239,8 +264,12 @@ def main() -> None:
     application = Application.builder().token(TELEGRAM_KEY).build()
 
     application.add_handler(CommandHandler("start", start))
+    # application.add_handler(
+    #     MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_gemini)
+    # )
+
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_gemini)
+        MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_agent)
     )
 
     application.bot.set_webhook(WEBHOOK_URL)
