@@ -98,8 +98,12 @@ Pregunta del usuario (incluye Ultimo resultado):
 
 _storage = StorageContext.from_defaults(persist_dir="index_files")
 # Cargar índices previamente persistidos
-index_csv = load_index_from_storage(StorageContext.from_defaults(persist_dir="index_csv"))
-index_culantrillo = load_index_from_storage(StorageContext.from_defaults(persist_dir="index_culantrillo"))
+index_csv = load_index_from_storage(
+    StorageContext.from_defaults(persist_dir="index_csv")
+)
+index_culantrillo = load_index_from_storage(
+    StorageContext.from_defaults(persist_dir="index_culantrillo")
+)
 
 if not GEMINI_KEY:
     raise RuntimeError("Missing GEMINI_API_KEY env var")
@@ -124,7 +128,8 @@ next_schema = types.Schema(
     type=types.Type.OBJECT,
     properties={
         "next": types.Schema(
-            type=types.Type.STRING, enum=["estado_actual_e_historico", "informacion_especie_planta"]
+            type=types.Type.STRING,
+            enum=["estado_actual_e_historico", "informacion_especie_planta"],
         )
     },
     required=["next"],
@@ -140,12 +145,13 @@ retriever_culantrillo = index_culantrillo.as_retriever(similarity_top_k=3)
 #     refine_template=GUIDE_PROMPT,
 # )
 
+
 def supervisor(state: PlantState) -> PlantState:
     prompt = (
         f"Decide cuál agente debe atender esta pregunta (solo JSON):\n"
         f'Pregunta: "{state["input"]}"\n'
-        'Si la pregunta está relacionada con el estado de la planta o su histórico invocar estado_actual'
-        'Si la pregunta es "¿cual es tu especie?" o relacionada con información acerca de la planta invocar historical_data'
+        "Si la pregunta está relacionada con el estado de la planta o su histórico invocar estado_actual_e_historico"
+        'Si la pregunta es "¿cual es tu especie?" o relacionada con información acerca de la planta invocar informacion_especie_planta'
         'Formato: {"next": "estado_actual_e_historico"} o {"next": "informacion_especie_planta"}'
     )
     config = types.GenerateContentConfig(
@@ -203,7 +209,10 @@ builder.add_node("informacion_especie_planta", informacion_especie_planta_node)
 builder.add_conditional_edges(
     "supervisor",
     lambda s: s["next"],
-    {"estado_actual_e_historico": "estado_actual_e_historico", "informacion_especie_planta": "informacion_especie_planta"},
+    {
+        "estado_actual_e_historico": "estado_actual_e_historico",
+        "informacion_especie_planta": "informacion_especie_planta",
+    },
 )
 builder.set_entry_point("supervisor")
 builder.set_finish_point("estado_actual_e_historico")
