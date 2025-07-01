@@ -10,6 +10,7 @@ load_dotenv()
 bucket = os.getenv("BUCKET_URL")
 region = os.getenv("REGION")
 object_key = os.getenv("OBJECT_KEY")
+BASE_URL = os.getenv("BASE_URL")
 
 # values = ["1617", "2512", "20.7", "Necesita riego"]
 values = ["1444", "785", "23.0", "Marchita"]
@@ -33,3 +34,11 @@ headers = {"Content-Type": "application/json"}
 with httpx.Client() as client:
     response = client.put(url, content=data, headers=headers)
     print(response.status_code, response.text)
+    message = (
+            "Nuevo estado reportado:\n"
+            f"soil: {values[0]}, light: {values[1]}, "
+            f"temp_c: {values[2]}, result: {values[3]}"
+        )
+    telegram_payload = {"text": message}
+    resp2 = client.post(f"{BASE_URL}/broadcast", json=telegram_payload, headers=headers)
+    print(resp2.status_code, resp2.text)

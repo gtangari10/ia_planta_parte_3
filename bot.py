@@ -32,6 +32,7 @@ from telegram.ext import (
     filters,
 )
 from typing_extensions import TypedDict
+from aiohttp import web
 
 load_dotenv()
 
@@ -47,7 +48,7 @@ REGION = os.getenv("REGION")
 OBJECT_KEY = os.getenv("OBJECT_KEY")
 
 Settings.embed_model = HuggingFaceEmbedding("BAAI/bge-base-en-v1.5")
-Settings.llm = Gemini(model="models/gemini-1.5-flash", temperature=0.25)
+Settings.llm = Gemini(model="models/gemini-2.5-flash", temperature=0.25)
 Settings.text_splitter = SentenceSplitter(chunk_size=800, chunk_overlap=200)
 
 SHEET_MAP = {
@@ -137,13 +138,6 @@ next_schema = types.Schema(
 
 retriever_csv = index_csv.as_retriever(similarity_top_k=3)
 retriever_culantrillo = index_culantrillo.as_retriever(similarity_top_k=3)
-# query_engine_culantrillo = index_culantrillo.as_query_engine(
-#     similarity_top_k=5,
-#     response_mode="tree_summarize",
-#     vector_store_query_mode="mmr",
-#     text_qa_template=GUIDE_PROMPT,
-#     refine_template=GUIDE_PROMPT,
-# )
 
 
 def supervisor(state: PlantState) -> PlantState:
@@ -151,7 +145,7 @@ def supervisor(state: PlantState) -> PlantState:
         f"Decide cuál agente debe atender esta pregunta (solo JSON):\n"
         f'Pregunta: "{state["input"]}"\n'
         "Si la pregunta está relacionada con el estado de la planta o su histórico invocar estado_actual_e_historico"
-        'Si la pregunta es "¿cual es tu especie?" o relacionada con información acerca de la planta invocar informacion_especie_planta'
+        'Si la pregunta está relacionada con información acerca de la planta invocar informacion_especie_planta'
         'Formato: {"next": "estado_actual_e_historico"} o {"next": "informacion_especie_planta"}'
     )
     config = types.GenerateContentConfig(
@@ -244,37 +238,6 @@ async def start(update: Update, context: CallbackContext) -> None:
     Podés preguntarme lo que quieras: cómo me siento hoy, consejos para cuidarme, o incluso mi nombre científico.
     """
     await update.message.reply_text(start_text)
-    await context.bot.send_message(
-        chat_id=chat_id, text="Este es un mensaje del servidor."
-    )
-
-
-"""async def infer(query: str) -> str:
-    loop = asyncio.get_running_loop()
-    # llama-index is blocking ⇒ delegate to default ThreadPool
-    response = await loop.run_in_executor(None, lambda: _query_engine.query(query))
-    return str(response).strip()"""
-
-
-"""retriever = _index.as_retriever(similarity_top_k=8)"""
-
-
-# async def chat_with_gemini(update: Update, _: CallbackContext) -> None:
-#     question = update.message.text.strip()
-#     last_read = await _fetch_input_from_bucket()
-#     nodes = await asyncio.get_running_loop().run_in_executor(
-#         None, lambda: retriever.retrieve(question)
-#     )
-#     context = "\n".join(n.get_content() for n in nodes)
-#     llm_prompt = GUIDE_PROMPT.format(
-#         context_str=context,
-#         query_str=f"<Ultimo resultado: {last_read}>\n{question}",
-#     )
-#     loop = asyncio.get_running_loop()
-#     response = await loop.run_in_executor(None, model.generate_content, llm_prompt)
-#     answer = await infer(llm_prompt)
-
-#     await update.message.reply_text(response.text.strip())
 
 
 async def chat_with_agent(update: Update, context: CallbackContext) -> None:
@@ -288,32 +251,57 @@ async def chat_with_agent(update: Update, context: CallbackContext) -> None:
 
     await update.message.reply_text(respuesta_final)
 
+ADMIN_CHAT_ID = 7627923382
 
+async def notify_admin(request: web.Request) -> web.Response:
+    """
+    POST /broadcast  { "text": "<message>" }
+    """
+    data = await request.json()
+    text = data.get("text") or "(mensaje vacío)"
+    bot = request.app["bot"]
+    await bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
+    return web.json_response({"ok": True})
+ 
+async def telegram_webhook_handler(request: web.Request) -> web.Response:
+    data = await request.json()
+    update = Update.de_json(data, request.app["bot"])
+    await request.app["application"].process_update(update)
+    return web.Response(status=200)
+ 
 def main() -> None:
     logging.basicConfig(
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         level=logging.INFO,
     )
-
+ 
     application = Application.builder().token(TELEGRAM_KEY).build()
-
+ 
     application.add_handler(CommandHandler("start", start))
-    # application.add_handler(
-    #     MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_gemini)
-    # )
-
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_agent)
-    )
-
-    application.bot.set_webhook(WEBHOOK_URL)
-
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=TOKEN,
-        webhook_url=WEBHOOK_URL,
-    )
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_agent))
+ 
+    # aiohttp app
+    app = web.Application()
+    app["application"] = application
+    app["bot"] = application.bot
+ 
+    # Add webhook and broadcast endpoints
+    app.router.add_post(f"/{TOKEN}", telegram_webhook_handler)
+    app.router.add_post("/broadcast", notify_admin)
+ 
+    # Start the aiohttp server
+    async def on_startup(app_: web.Application):
+        await application.initialize()
+        await application.bot.set_webhook(url=WEBHOOK_URL)
+ 
+    async def on_cleanup(app_: web.Application):
+        await application.shutdown()
+        await application.stop()
+ 
+    app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
+ 
+    web.run_app(app, port=PORT)
 
 
 if __name__ == "__main__":
